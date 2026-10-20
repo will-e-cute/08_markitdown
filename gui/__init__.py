@@ -2,5 +2,6 @@
 
 from .main_window import MainWindow
 from .progress_dialog import ProgressDialog
+from .markdown_viewer import MarkdownViewerDialog
 
-__all__ = ['MainWindow', 'ProgressDialog']
+__all__ = ['MainWindow', 'ProgressDialog', 'MarkdownViewerDialog']
