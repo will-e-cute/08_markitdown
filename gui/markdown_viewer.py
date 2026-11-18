@@ -1,5 +1,6 @@
 """Markdown viewer dialog to inspect converted files."""
 
+from collections import Counter
 from pathlib import Path
 from typing import List, Optional
 
@@ -7,7 +8,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTabWidget, QTextBrowser, QTextEdit, QPushButton, QApplication
 )
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QFont, QDesktopServices
 
 
@@ -27,9 +28,12 @@ class MarkdownViewerDialog(QDialog):
         top_layout.addWidget(QLabel("Fichier :"))
 
         self.file_combo = QComboBox()
-        for f in self.markdown_files:
-            self.file_combo.addItem(f.name, str(f))
-        
+        name_counts = Counter(f.name for f in self.markdown_files)
+        for idx_item, f in enumerate(self.markdown_files):
+            display_label = f"{f.parent.name}/{f.name}" if name_counts[f.name] > 1 else f.name
+            self.file_combo.addItem(display_label, str(f))
+            self.file_combo.setItemData(idx_item, str(f), Qt.ItemDataRole.ToolTipRole)
+
         # Select initial file if provided
         if initial_file and Path(initial_file) in self.markdown_files:
             idx = self.markdown_files.index(Path(initial_file))
@@ -107,9 +111,7 @@ class MarkdownViewerDialog(QDialog):
         content = self.raw_edit.toPlainText()
         QApplication.clipboard().setText(content)
         self.copy_btn.setText("✓ Copié !")
-        # Reset text after a short moment if dialog stays open
-        self.copy_btn.setEnabled(False)
-        self.copy_btn.setEnabled(True)
+        QTimer.singleShot(2000, lambda: self.copy_btn.setText("📋 Copier le Markdown"))
 
     def open_in_system_editor(self):
         current_file = self.get_current_file()

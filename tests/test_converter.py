@@ -7,7 +7,7 @@ from PySide6.QtCore import QCoreApplication
 from core.converter import (
     ConversionWorker,
     find_tesseract_cmd,
-    check_ocr_availability
+    check_ocr_availability,
 )
 
 
@@ -54,7 +54,7 @@ def test_conversion_worker_basic(tmp_path: Path, qapp):
         input_paths=[in_dir],
         output_dir=out_dir,
         recursive=True,
-        preserve_structure=True
+        preserve_structure=True,
     )
 
     completed_events = []
@@ -88,7 +88,7 @@ def test_conversion_worker_structure_preservation(tmp_path: Path, qapp):
         input_paths=[src],
         output_dir=out,
         recursive=True,
-        preserve_structure=True
+        preserve_structure=True,
     )
     worker.run()
 
@@ -109,7 +109,7 @@ def test_conversion_worker_cancel(tmp_path: Path, qapp):
     worker = ConversionWorker(
         input_paths=[src],
         output_dir=out,
-        recursive=True
+        recursive=True,
     )
     worker.cancel()  # cancel immediately
 
@@ -119,3 +119,65 @@ def test_conversion_worker_cancel(tmp_path: Path, qapp):
 
     assert len(cancelled_called) == 1
     assert cancelled_called[0][0] == 0  # 0 succeeded because cancelled before item 0
+
+
+def test_conversion_worker_ocr_failure_reported_as_error(tmp_path: Path, qapp, monkeypatch):
+    """Verify that an OCR failure reports success=False and does not write a corrupt .md file."""
+    img_file = tmp_path / "scan.png"
+    img_file.write_bytes(b"not a valid png image")
+    out_dir = tmp_path / "out_ocr"
+
+    # Force OCR availability to False
+    monkeypatch.setattr(
+        "core.converter.check_ocr_availability",
+        lambda custom_path=None: (False, "Tesseract introuvable", []),
+    )
+
+    worker = ConversionWorker(
+        input_paths=[img_file],
+        output_dir=out_dir,
+        use_ocr=True,
+    )
+
+    completed_events = []
+    finished_events = []
+    worker.file_completed.connect(lambda p, s, m: completed_events.append((p, s, m)))
+    worker.finished_all.connect(lambda s, t: finished_events.append((s, t)))
+
+    worker.run()
+
+    assert len(completed_events) == 1
+    assert completed_events[0][1] is False
+    assert "OCR non disponible" in completed_events[0][2]
+    assert finished_events == [(0, 1)]
+    assert not (out_dir / "scan.md").exists()
+
+
+def test_conversion_worker_conflict_policies(tmp_path: Path, qapp):
+    """Verify overwrite and skip policies in ConversionWorker."""
+    src_file = tmp_path / "note.txt"
+    src_file.write_text("Nouveau contenu", encoding="utf-8")
+    out_dir = tmp_path / "out_policy"
+    out_dir.mkdir()
+    existing_md = out_dir / "note.md"
+    existing_md.write_text("Ancien contenu", encoding="utf-8")
+
+    # 1. Skip policy should leave existing_md untouched
+    worker_skip = ConversionWorker(
+        input_paths=[src_file],
+        output_dir=out_dir,
+        conflict_policy="skip",
+    )
+    worker_skip.run()
+    assert existing_md.read_text(encoding="utf-8") == "Ancien contenu"
+    assert not (out_dir / "note_1.md").exists()
+
+    # 2. Overwrite policy should replace existing_md without creating note_1.md
+    worker_overwrite = ConversionWorker(
+        input_paths=[src_file],
+        output_dir=out_dir,
+        conflict_policy="overwrite",
+    )
+    worker_overwrite.run()
+    assert "Nouveau contenu" in existing_md.read_text(encoding="utf-8")
+    assert not (out_dir / "note_1.md").exists()

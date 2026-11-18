@@ -82,6 +82,10 @@ python main.py ./documents -o ./output --preserve-structure
 # Convertir avec OCR activé
 python main.py scan.png -o ./output --ocr --ocr-lang fra+eng
 
+# Écraser ou ignorer les fichiers Markdown existants
+python main.py ./documents -o ./output --overwrite
+python main.py ./documents -o ./output --skip-existing
+
 # Voir toutes les options
 python main.py --help
 ```

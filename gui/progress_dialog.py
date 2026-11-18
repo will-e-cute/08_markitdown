@@ -1,6 +1,5 @@
 """Progress dialog for MarkItDown conversion."""
 
-import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -8,7 +7,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QProgressBar, QLabel,
     QTextEdit, QPushButton, QMessageBox, QApplication
 )
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import Qt, Signal, QUrl, QTimer
 from PySide6.QtGui import QFont, QDesktopServices, QCloseEvent
 
 from core.converter import ConversionWorker
@@ -17,71 +16,71 @@ from gui.markdown_viewer import MarkdownViewerDialog
 
 class ProgressDialog(QDialog):
     """Modal dialog displaying conversion progress with logs and post-conversion actions."""
-    
+
     finished = Signal()
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Conversion en cours...")
         self.resize(600, 380)
         self.setModal(True)
-        
+
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
-        
+
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
-        
+
         # Current status label
         self.status_label = QLabel("Préparation...")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
-        
+
         # Detailed log area
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
         self.log_area.setFont(QFont("Consolas", 9))
         layout.addWidget(self.log_area)
-        
+
         # Bottom controls
         bottom_layout = QHBoxLayout()
-        
+
         # Log copy button
         self.copy_log_btn = QPushButton("📋 Copier le journal")
         self.copy_log_btn.clicked.connect(self.copy_log)
         bottom_layout.addWidget(self.copy_log_btn)
-        
+
         # Open output folder button
         self.open_folder_btn = QPushButton("📂 Ouvrir le dossier")
         self.open_folder_btn.setEnabled(False)
         self.open_folder_btn.clicked.connect(self.open_output_dir)
         bottom_layout.addWidget(self.open_folder_btn)
-        
+
         # Preview generated markdown button
         self.preview_btn = QPushButton("👁️ Aperçu Markdown")
         self.preview_btn.setEnabled(False)
         self.preview_btn.clicked.connect(self.show_markdown_preview)
         bottom_layout.addWidget(self.preview_btn)
-        
+
         bottom_layout.addStretch()
-        
+
         # Cancel / Close action button
         self.action_btn = QPushButton("Annuler")
         self.action_btn.clicked.connect(self.on_action_clicked)
         bottom_layout.addWidget(self.action_btn)
-        
+
         layout.addLayout(bottom_layout)
-        
+
         self.worker: Optional[ConversionWorker] = None
         self.output_dir: Optional[Path] = None
         self.converted_files: List[Path] = []
         self.is_converting = False
         self.was_cancelled = False
-    
+
     def start_conversion(
         self,
         input_paths: List[Path],
@@ -91,13 +90,14 @@ class ProgressDialog(QDialog):
         use_ocr: bool = False,
         ocr_lang: Optional[str] = None,
         custom_tesseract_cmd: Optional[str] = None,
+        conflict_policy: str = "rename",
     ):
         """Configure and start the conversion worker thread."""
         self.output_dir = Path(output_dir)
         self.converted_files = []
         self.is_converting = True
         self.was_cancelled = False
-        
+
         self.log_area.clear()
         self.progress_bar.setValue(0)
         self.status_label.setText("Scan des fichiers à convertir...")
@@ -105,7 +105,7 @@ class ProgressDialog(QDialog):
         self.action_btn.setEnabled(True)
         self.open_folder_btn.setEnabled(False)
         self.preview_btn.setEnabled(False)
-        
+
         self.worker = ConversionWorker(
             input_paths=input_paths,
             output_dir=self.output_dir,
@@ -114,6 +114,7 @@ class ProgressDialog(QDialog):
             use_ocr=use_ocr,
             ocr_lang=ocr_lang,
             custom_tesseract_cmd=custom_tesseract_cmd,
+            conflict_policy=conflict_policy,
         )
         self.worker.progress_updated.connect(self.on_progress)
         self.worker.file_completed.connect(self.on_file_completed)
@@ -144,19 +145,19 @@ class ProgressDialog(QDialog):
         self.progress_bar.setValue(100)
         self.action_btn.setText("Fermer")
         self.open_folder_btn.setEnabled(True)
-        
+
         if total_count == 0:
             self.status_label.setText("Aucun fichier compatible trouvé à convertir.")
         else:
             self.status_label.setText(
-                f"Terminé : {success_count}/{total_count} fichier(s) converti(s) avec succès."
+                f"Terminé : {success_count}/{total_count} fichier(s) traité(s) avec succès."
             )
             if success_count < total_count:
                 QMessageBox.warning(
                     self,
                     "Conversion terminée avec des erreurs",
-                    f"{success_count}/{total_count} fichier(s) converti(s).\n"
-                    f"{total_count - success_count} échec(s). Consultez le journal ci-dessous pour plus de détails."
+                    f"{success_count}/{total_count} fichier(s) traité(s).\n"
+                    f"{total_count - success_count} échec(s). Consultez le journal ci-dessous pour plus de détails.",
                 )
         self.finished.emit()
 
@@ -186,6 +187,7 @@ class ProgressDialog(QDialog):
     def copy_log(self):
         QApplication.clipboard().setText(self.log_area.toPlainText())
         self.copy_log_btn.setText("✓ Journal copié !")
+        QTimer.singleShot(2000, lambda: self.copy_log_btn.setText("📋 Copier le journal"))
 
     def open_output_dir(self):
         if self.output_dir and self.output_dir.exists():
@@ -203,7 +205,7 @@ class ProgressDialog(QDialog):
                 "Interrompre la conversion ?",
                 "Une conversion est en cours d'exécution. Voulez-vous l'annuler et fermer ?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
+                QMessageBox.StandardButton.No,
             )
             if res == QMessageBox.StandardButton.Yes:
                 self.cancel_conversion()

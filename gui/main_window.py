@@ -7,17 +7,50 @@ from typing import List, Optional
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QGroupBox, QCheckBox,
-    QListWidget, QListWidgetItem, QMessageBox, QInputDialog, QDialog
+    QListWidget, QListWidgetItem, QMessageBox, QComboBox, QDialog,
+    QDialogButtonBox
 )
-from PySide6.QtCore import Qt, QSettings, QUrl
-from PySide6.QtGui import QFont, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, QSettings, QUrl, Signal
+from PySide6.QtGui import (
+    QFont, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QKeyEvent
+)
 
 from core.converter import (
-    SUPPORTED_EXTENSIONS, OCR_AVAILABLE, OCR_MESSAGE, OCR_LANGUAGES,
-    check_ocr_availability
+    SUPPORTED_EXTENSIONS,
+    DOCUMENT_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    AUDIO_EXTENSIONS,
+    check_ocr_availability,
 )
 from gui.progress_dialog import ProgressDialog
 from gui.markdown_viewer import MarkdownViewerDialog
+
+
+class InputFileListWidget(QListWidget):
+    """Custom QListWidget handling Delete/Backspace keys cleanly via a Qt Signal."""
+
+    delete_requested = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_requested.emit()
+        else:
+            super().keyPressEvent(event)
+
+
+def build_file_dialog_filter() -> str:
+    """Build QFileDialog filter string dynamically from core extension sets."""
+    all_Patterns = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))
+    doc_patterns = " ".join(f"*{ext}" for ext in sorted(DOCUMENT_EXTENSIONS))
+    img_patterns = " ".join(f"*{ext}" for ext in sorted(IMAGE_EXTENSIONS))
+    aud_patterns = " ".join(f"*{ext}" for ext in sorted(AUDIO_EXTENSIONS))
+    return (
+        f"Tous documents compatibles ({all_Patterns});;"
+        f"Documents, Tableurs & Web ({doc_patterns});;"
+        f"Images ({img_patterns});;"
+        f"Audio ({aud_patterns});;"
+        "Tous les fichiers (*.*)"
+    )
 
 
 class MainWindow(QMainWindow):
@@ -26,12 +59,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MarkItDown GUI - Convertisseur de documents")
-        self.setMinimumSize(680, 560)
+        self.setMinimumSize(700, 600)
         self.setAcceptDrops(True)
 
         self.settings = QSettings("MarkItDownGUI", "ConverterApp")
         self.custom_tesseract_path = self.settings.value("custom_tesseract_path", "")
-        
+
         # Check OCR availability with custom path if any
         self.ocr_available, self.ocr_status_msg, self.ocr_langs = check_ocr_availability(
             self.custom_tesseract_path if self.custom_tesseract_path else None
@@ -72,7 +105,7 @@ class MainWindow(QMainWindow):
         input_layout = QVBoxLayout(input_group)
         input_layout.setSpacing(8)
 
-        # Buttons to add files / folders
+        # Buttons to add / remove files & folders
         btns_layout = QHBoxLayout()
         self.add_files_btn = QPushButton("📄 Ajouter des fichiers...")
         self.add_files_btn.setMinimumHeight(34)
@@ -84,19 +117,29 @@ class MainWindow(QMainWindow):
         self.add_folder_btn.clicked.connect(self.select_folder)
         btns_layout.addWidget(self.add_folder_btn)
 
+        self.remove_selected_btn = QPushButton("➖ Retirer la sélection")
+        self.remove_selected_btn.setMinimumHeight(34)
+        self.remove_selected_btn.setEnabled(False)
+        self.remove_selected_btn.clicked.connect(self.remove_selected_items)
+        btns_layout.addWidget(self.remove_selected_btn)
+
         self.clear_list_btn = QPushButton("🗑️ Vider la liste")
         self.clear_list_btn.setMinimumHeight(34)
+        self.clear_list_btn.setEnabled(False)
         self.clear_list_btn.clicked.connect(self.clear_selection)
         btns_layout.addWidget(self.clear_list_btn)
 
         input_layout.addLayout(btns_layout)
 
         # Input List Widget
-        self.input_list = QListWidget()
+        self.input_list = InputFileListWidget()
         self.input_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.input_list.setMinimumHeight(110)
-        self.input_list.setToolTip("Fichiers et dossiers en attente. Sélectionnez un élément et appuyez sur Suppr pour le retirer.")
-        self.input_list.keyPressEvent = self.list_key_press_event
+        self.input_list.setToolTip(
+            "Fichiers et dossiers en attente. Sélectionnez un élément et appuyez sur Suppr pour le retirer."
+        )
+        self.input_list.delete_requested.connect(self.remove_selected_items)
+        self.input_list.itemSelectionChanged.connect(self.update_selection_buttons)
         input_layout.addWidget(self.input_list)
 
         self.count_label = QLabel("Aucun élément sélectionné. Glissez-déposez vos fichiers ici.")
@@ -121,12 +164,28 @@ class MainWindow(QMainWindow):
         )
         options_layout.addWidget(self.preserve_structure_check)
 
+        # Conflict policy row
+        conflict_row = QHBoxLayout()
+        conflict_row.addWidget(QLabel("Si le fichier .md existe déjà :"))
+        self.conflict_combo = QComboBox()
+        self.conflict_combo.addItem("Renommer automatiquement (fichier_1.md)", "rename")
+        self.conflict_combo.addItem("Écraser le fichier existant", "overwrite")
+        self.conflict_combo.addItem("Ignorer la conversion du fichier", "skip")
+        conflict_row.addWidget(self.conflict_combo, 1)
+        options_layout.addLayout(conflict_row)
+
         # OCR row
         ocr_row = QHBoxLayout()
         self.ocr_check = QCheckBox("Activer l'OCR pour les images (Tesseract)")
         self.ocr_check.setChecked(False)
         self.ocr_check.setEnabled(self.ocr_available)
         ocr_row.addWidget(self.ocr_check)
+
+        ocr_row.addWidget(QLabel("Langue :"))
+        self.ocr_lang_combo = QComboBox()
+        self.populate_ocr_languages()
+        self.ocr_lang_combo.setEnabled(self.ocr_available)
+        ocr_row.addWidget(self.ocr_lang_combo)
 
         self.ocr_config_btn = QPushButton("⚙️ Configurer Tesseract...")
         self.ocr_config_btn.clicked.connect(self.configure_tesseract)
@@ -158,9 +217,9 @@ class MainWindow(QMainWindow):
 
         # Supported formats footer
         formats_text = (
-            "<b>Formats supportés :</b> PDF, Word (.docx), Excel (.xlsx, .xls, .csv), "
-            "PowerPoint (.pptx), Web (.html), E-books (.epub), Notebooks (.ipynb), "
-            "Messages (.msg), Audio (.mp3, .wav), Images (.png, .jpg, .webp...)"
+            "<b>Formats supportés :</b> PDF, Word (.docx, .doc), Excel (.xlsx, .xls, .csv), "
+            "PowerPoint (.pptx, .ppt), Web (.html, .xhtml), E-books (.epub), Notebooks (.ipynb), "
+            "Messages (.msg), Archives (.zip), Audio (.mp3, .wav), Images (.png, .jpg, .webp, .tiff, .gif, .bmp)"
         )
         formats_label = QLabel(formats_text)
         formats_label.setWordWrap(True)
@@ -203,7 +262,25 @@ class MainWindow(QMainWindow):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.status_label)
 
-        self.update_convert_button()
+        self.update_ui_state()
+
+    def populate_ocr_languages(self):
+        """Populate the OCR language combo box based on detected Tesseract languages."""
+        current_selection = self.ocr_lang_combo.currentData()
+        self.ocr_lang_combo.clear()
+        self.ocr_lang_combo.addItem("Auto (fra+eng)", None)
+
+        if "fra" in self.ocr_langs and "eng" in self.ocr_langs:
+            self.ocr_lang_combo.addItem("fra+eng (Français + Anglais)", "fra+eng")
+
+        for lang in self.ocr_langs:
+            if lang.lower() != "osd":
+                self.ocr_lang_combo.addItem(lang, lang)
+
+        if current_selection is not None:
+            idx = self.ocr_lang_combo.findData(current_selection)
+            if idx >= 0:
+                self.ocr_lang_combo.setCurrentIndex(idx)
 
     # --- Drag & Drop Support ---
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -224,18 +301,11 @@ class MainWindow(QMainWindow):
 
     # --- File & Folder Selection ---
     def select_files(self):
-        extensions_filter = (
-            "Tous documents compatibles (*.pdf *.docx *.pptx *.xlsx *.xls *.csv *.html *.htm "
-            "*.ipynb *.epub *.msg *.zip *.txt *.json *.xml *.jpg *.jpeg *.png *.bmp *.webp *.wav *.mp3);;"
-            "Documents PDF (*.pdf);;"
-            "Documents Word (*.docx *.doc);;"
-            "Tableurs Excel / CSV (*.xlsx *.xls *.csv);;"
-            "Présentations PowerPoint (*.pptx);;"
-            "Images (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.webp);;"
-            "Tous les fichiers (*.*)"
-        )
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Sélectionner un ou plusieurs fichiers à convertir", "", extensions_filter
+            self,
+            "Sélectionner un ou plusieurs fichiers à convertir",
+            "",
+            build_file_dialog_filter(),
         )
         if files:
             self.add_paths([Path(f) for f in files])
@@ -257,12 +327,6 @@ class MainWindow(QMainWindow):
                 self.input_list.addItem(item)
         self.update_ui_state()
 
-    def list_key_press_event(self, event):
-        if event.key() == Qt.Key.Key_Delete:
-            self.remove_selected_items()
-        else:
-            QListWidget.keyPressEvent(self.input_list, event)
-
     def remove_selected_items(self):
         selected_items = self.input_list.selectedItems()
         for item in selected_items:
@@ -279,6 +343,10 @@ class MainWindow(QMainWindow):
         self.input_list.clear()
         self.update_ui_state()
 
+    def update_selection_buttons(self):
+        self.remove_selected_btn.setEnabled(len(self.input_list.selectedItems()) > 0)
+        self.clear_list_btn.setEnabled(len(self.input_paths) > 0)
+
     def update_ui_state(self):
         count = len(self.input_paths)
         if count == 0:
@@ -289,6 +357,7 @@ class MainWindow(QMainWindow):
         else:
             self.count_label.setText(f"{count} éléments sélectionnés.")
         self.update_convert_button()
+        self.update_selection_buttons()
 
     def select_output_dir(self):
         current_text = self.output_edit.text()
@@ -308,15 +377,47 @@ class MainWindow(QMainWindow):
 
     # --- Tesseract Configuration ---
     def configure_tesseract(self):
-        path, ok = QInputDialog.getText(
-            self,
-            "Configuration de Tesseract-OCR",
-            "Chemin complet vers tesseract.exe (laisser vide pour la détection automatique) :",
-            QLineEdit.EchoMode.Normal,
-            self.custom_tesseract_path
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Configuration de Tesseract-OCR")
+        dlg.setMinimumWidth(480)
+        dlg_layout = QVBoxLayout(dlg)
+
+        dlg_layout.addWidget(
+            QLabel("Chemin complet vers l'exécutable tesseract.exe (laisser vide pour la détection automatique) :")
         )
-        if ok:
-            self.custom_tesseract_path = path.strip()
+
+        row = QHBoxLayout()
+        path_edit = QLineEdit(self.custom_tesseract_path)
+        row.addWidget(path_edit, 1)
+
+        browse_btn = QPushButton("Parcourir...")
+
+        def on_browse():
+            exe_filter = "Exécutable Tesseract (tesseract.exe);;Tous les exécutables (*.exe);;Tous les fichiers (*)"
+            selected, _ = QFileDialog.getOpenFileName(
+                dlg, "Sélectionner tesseract.exe", path_edit.text() or r"C:\Program Files", exe_filter
+            )
+            if selected:
+                path_edit.setText(selected)
+
+        browse_btn.clicked.connect(on_browse)
+        row.addWidget(browse_btn)
+
+        auto_btn = QPushButton("Détection auto")
+        auto_btn.clicked.connect(lambda: path_edit.setText(""))
+        row.addWidget(auto_btn)
+
+        dlg_layout.addLayout(row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.custom_tesseract_path = path_edit.text().strip()
             self.settings.setValue("custom_tesseract_path", self.custom_tesseract_path)
             self.ocr_available, self.ocr_status_msg, self.ocr_langs = check_ocr_availability(
                 self.custom_tesseract_path if self.custom_tesseract_path else None
@@ -324,6 +425,8 @@ class MainWindow(QMainWindow):
             self.ocr_status_label.setText(self.ocr_status_msg)
             self.ocr_status_label.setStyleSheet("color: #2e7d32;" if self.ocr_available else "color: #c62828;")
             self.ocr_check.setEnabled(self.ocr_available)
+            self.ocr_lang_combo.setEnabled(self.ocr_available)
+            self.populate_ocr_languages()
 
     # --- Conversion Execution ---
     def start_conversion(self):
@@ -351,7 +454,9 @@ class MainWindow(QMainWindow):
             recursive=self.recursive_check.isChecked(),
             preserve_structure=self.preserve_structure_check.isChecked(),
             use_ocr=self.ocr_check.isChecked(),
+            ocr_lang=self.ocr_lang_combo.currentData(),
             custom_tesseract_cmd=self.custom_tesseract_path if self.custom_tesseract_path else None,
+            conflict_policy=self.conflict_combo.currentData() or "rename",
         )
         self.progress_dialog.finished.connect(self.on_conversion_finished)
         self.progress_dialog.show()
@@ -374,6 +479,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("recursive", self.recursive_check.isChecked())
         self.settings.setValue("preserve_structure", self.preserve_structure_check.isChecked())
         self.settings.setValue("use_ocr", self.ocr_check.isChecked())
+        self.settings.setValue("ocr_lang", self.ocr_lang_combo.currentData() or "")
+        self.settings.setValue("conflict_policy", self.conflict_combo.currentData() or "rename")
         self.settings.setValue("geometry", self.saveGeometry())
 
     def restore_settings(self):
@@ -386,6 +493,16 @@ class MainWindow(QMainWindow):
             self.preserve_structure_check.setChecked(self.settings.value("preserve_structure", type=bool))
         if self.settings.contains("use_ocr") and self.ocr_available:
             self.ocr_check.setChecked(self.settings.value("use_ocr", type=bool))
+        if self.settings.contains("ocr_lang"):
+            saved_lang = self.settings.value("ocr_lang", "")
+            idx = self.ocr_lang_combo.findData(saved_lang if saved_lang else None)
+            if idx >= 0:
+                self.ocr_lang_combo.setCurrentIndex(idx)
+        if self.settings.contains("conflict_policy"):
+            saved_policy = self.settings.value("conflict_policy", "rename")
+            idx = self.conflict_combo.findData(saved_policy)
+            if idx >= 0:
+                self.conflict_combo.setCurrentIndex(idx)
 
     def closeEvent(self, event: QCloseEvent):
         if self.progress_dialog and self.progress_dialog.is_converting:
@@ -394,7 +511,7 @@ class MainWindow(QMainWindow):
                 "Quitter pendant la conversion ?",
                 "Une conversion est en cours d'exécution. Voulez-vous l'annuler et quitter ?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
+                QMessageBox.StandardButton.No,
             )
             if res == QMessageBox.StandardButton.Yes:
                 self.progress_dialog.cancel_conversion()

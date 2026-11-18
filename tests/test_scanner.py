@@ -1,14 +1,15 @@
 """Unit tests for file scanner and path utilities."""
 
-import os
 from pathlib import Path
 import pytest
 
 from core.converter import (
     scan_files_to_convert,
     get_unique_output_path,
+    resolve_output_path,
+    resolve_ocr_language,
     SUPPORTED_EXTENSIONS,
-    IMAGE_EXTENSIONS
+    IMAGE_EXTENSIONS,
 )
 
 
@@ -41,6 +42,45 @@ def test_unique_output_path(tmp_path: Path):
     assert p3.name == "document_2.md"
 
 
+def test_resolve_output_path_policies(tmp_path: Path):
+    """Test rename, overwrite, and skip policies."""
+    target_dir = tmp_path / "policy_out"
+    existing = target_dir / "report.md"
+    target_dir.mkdir()
+    existing.write_text("old", encoding="utf-8")
+
+    # rename policy
+    renamed = resolve_output_path(target_dir, "report", conflict_policy="rename")
+    assert renamed is not None
+    assert renamed.name == "report_1.md"
+
+    # overwrite policy
+    overwritten = resolve_output_path(target_dir, "report", conflict_policy="overwrite")
+    assert overwritten == existing
+
+    # skip policy when existing
+    skipped = resolve_output_path(target_dir, "report", conflict_policy="skip")
+    assert skipped is None
+
+    # skip policy when not existing
+    fresh = resolve_output_path(target_dir, "new_doc", conflict_policy="skip")
+    assert fresh == target_dir / "new_doc.md"
+
+    # invalid policy raises ValueError
+    with pytest.raises(ValueError):
+        resolve_output_path(target_dir, "report", conflict_policy="invalid")
+
+
+def test_resolve_ocr_language():
+    """Test OCR language fallback selection."""
+    assert resolve_ocr_language("deu", ["fra", "eng"]) == "deu"
+    assert resolve_ocr_language(None, ["fra", "eng", "osd"]) == "fra+eng"
+    assert resolve_ocr_language(None, ["fra"]) == "fra"
+    assert resolve_ocr_language(None, ["eng"]) == "eng"
+    assert resolve_ocr_language(None, ["spa"]) == "spa"
+    assert resolve_ocr_language(None, []) == "eng"
+
+
 def test_scan_single_files(tmp_path: Path):
     """Test scanning standalone files with case variations and unsupported filter."""
     f1 = tmp_path / "report.PDF"
@@ -66,7 +106,7 @@ def test_scan_recursive_and_preservation(tmp_path: Path):
     """Test recursive directory walk and relative directory calculation."""
     src = tmp_path / "source"
     src.mkdir()
-    
+
     sub1 = src / "sub1"
     sub1.mkdir()
     f_sub1 = sub1 / "doc1.docx"
